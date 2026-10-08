@@ -1,0 +1,356 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isSelf(userId) {
+      return signedIn() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return signedIn() && request.auth.token.admin == true;
+    }
+
+    function isSeller(userId) {
+      let userPath = /databases/$(database)/documents/users/$(userId);
+      return signedIn() && request.auth.uid == userId
+        && exists(userPath)
+        && get(userPath).data.role == 'SELLER';
+    }
+
+    function canReadOrder(orderId) {
+      let orderPath = /databases/$(database)/documents/orders/$(orderId);
+      return isAdmin() || (signedIn() && exists(orderPath)
+        && (get(orderPath).data.buyerId == request.auth.uid
+          || get(orderPath).data.sellerId == request.auth.uid));
+    }
+
+    match /users/{userId} {
+      allow get: if isSelf(userId) || isAdmin();
+      allow list: if isAdmin();
+      allow create: if isSelf(userId)
+        && request.resource.data.keys().hasOnly([
+          'uid', 'email', 'displayName', 'photoURL', 'role', 'createdAt'
+        ])
+        && request.resource.data.uid == userId
+        && request.resource.data.role == 'BUYER'
+        && (request.resource.data.email == null || request.resource.data.email is string)
+        && request.resource.data.displayName is string
+        && request.resource.data.displayName.size() <= 100
+        && (request.resource.data.photoURL == null || request.resource.data.photoURL is string);
+      allow update: if (isSelf(userId)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'displayName', 'photoURL', 'updatedAt'
+          ])
+          && request.resource.data.displayName is string
+          && request.resource.data.displayName.size() <= 100)
+        || (isAdmin()
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['role', 'updatedAt'])
+          && request.resource.data.role == 'SELLER'
+          && request.resource.data.updatedAt == request.time);
+      allow delete: if false;
+    }
+
+    match /publicProfiles/{userId} {
+      allow get: if true;
+      allow list: if resource.data.status == 'ACTIVE';
+      allow create: if isAdmin()
+        && request.resource.data.keys().hasOnly([
+          'uid', 'storeName', 'description', 'rating', 'salesCount', 'successRate', 'verified', 'status', 'createdAt'
+        ])
+        && request.resource.data.uid == userId
+        && request.resource.data.storeName is string
+        && request.resource.data.description is string
+        && request.resource.data.rating == 0
+        && request.resource.data.salesCount == 0
+        && request.resource.data.successRate == 0
+        && request.resource.data.verified == false
+        && request.resource.data.status == 'ACTIVE'
+        && request.resource.data.createdAt == request.time;
+      allow update: if isSeller(userId)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'storeName', 'description', 'updatedAt'
+        ])
+        && request.resource.data.uid == userId
+        && request.resource.data.storeName is string
+        && request.resource.data.storeName.size() >= 2
+        && request.resource.data.storeName.size() <= 60
+        && request.resource.data.description is string
+        && request.resource.data.description.size() <= 500
+        && request.resource.data.updatedAt == request.time;
+      allow update, delete: if false;
+    }
+
+    match /games/{gameId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    match /categories/{categoryId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    match /products/{productId} {
+      allow read: if resource.data.status == 'ACTIVE' || isAdmin() || isSeller(resource.data.sellerId);
+      allow create: if isSeller(request.auth.uid)
+        && request.resource.data.keys().hasOnly([
+          'name', 'slug', 'game', 'category', 'price', 'seller', 'sellerId',
+          'sellerLevel', 'rating', 'sales', 'successRate', 'online', 'badge',
+          'verified', 'imageUrl', 'description', 'shortDescription',
+          'deliveryType', 'deliveryTime', 'stock', 'status', 'createdAt', 'updatedAt'
+        ])
+        && request.resource.data.sellerId == request.auth.uid
+        && request.resource.data.seller == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.displayName
+        && request.resource.data.name is string
+        && request.resource.data.name.size() >= 3
+        && request.resource.data.name.size() <= 100
+        && request.resource.data.slug is string
+        && request.resource.data.slug.matches('[a-z0-9-]{3,120}')
+        && request.resource.data.game is string
+        && request.resource.data.game.size() <= 60
+        && request.resource.data.category is string
+        && request.resource.data.price is number
+        && request.resource.data.price > 0
+        && request.resource.data.price <= 1000000
+        && request.resource.data.stock is int
+        && request.resource.data.stock > 0
+        && request.resource.data.stock <= 100000
+        && request.resource.data.imageUrl is string
+        && request.resource.data.imageUrl.matches('https://.{1,500}')
+        && request.resource.data.description is string
+        && request.resource.data.description.size() >= 10
+        && request.resource.data.description.size() <= 5000
+        && request.resource.data.shortDescription is string
+        && request.resource.data.shortDescription.size() <= 240
+        && request.resource.data.deliveryType in ['AUTOMATIC', 'MANUAL', 'ACCOUNT_SERVICE']
+        && request.resource.data.deliveryTime is string
+        && request.resource.data.deliveryTime.size() <= 80
+        && request.resource.data.sellerLevel == 0
+        && request.resource.data.rating == 0
+        && request.resource.data.sales == 0
+        && request.resource.data.successRate == 0
+        && request.resource.data.online == false
+        && request.resource.data.badge == 'Новый продавец'
+        && request.resource.data.verified == false
+        && request.resource.data.status == 'PENDING_REVIEW'
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time;
+      allow update: if (isSeller(resource.data.sellerId)
+          && request.resource.data.sellerId == resource.data.sellerId
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'name', 'slug', 'game', 'category', 'price', 'imageUrl', 'description',
+            'shortDescription', 'deliveryType', 'deliveryTime', 'stock', 'status', 'updatedAt'
+          ])
+            && request.resource.data.updatedAt == request.time
+            && ((request.resource.data.status in ['PENDING_REVIEW', 'SUSPENDED']
+                && request.resource.data.name is string
+                && request.resource.data.name.size() >= 3
+                && request.resource.data.name.size() <= 100
+                && request.resource.data.slug is string
+                && request.resource.data.slug.matches('[a-z0-9-]{3,120}')
+                && request.resource.data.price is number
+                && request.resource.data.price > 0
+                && request.resource.data.price <= 1000000
+                && request.resource.data.stock is int
+                && request.resource.data.stock > 0
+                && request.resource.data.stock <= 100000
+                && request.resource.data.imageUrl is string
+                && request.resource.data.imageUrl.matches('https://.{1,500}')
+                && request.resource.data.description is string
+                && request.resource.data.description.size() >= 10
+                && request.resource.data.description.size() <= 5000
+                && request.resource.data.shortDescription is string
+                && request.resource.data.shortDescription.size() <= 240
+                && request.resource.data.deliveryType in ['AUTOMATIC', 'MANUAL', 'ACCOUNT_SERVICE']
+                && request.resource.data.deliveryTime is string
+                && request.resource.data.deliveryTime.size() <= 80)
+              || (request.resource.data.status == 'SUSPENDED'
+                && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt']))))
+        || (isAdmin()
+          && resource.data.status == 'PENDING_REVIEW'
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'status', 'reviewedAt', 'reviewedBy'
+          ])
+          && request.resource.data.status in ['ACTIVE', 'REJECTED']
+          && request.resource.data.reviewedAt == request.time
+          && request.resource.data.reviewedBy == request.auth.uid);
+      allow delete: if false;
+    }
+
+    match /sellerApplications/{userId} {
+      allow get: if isSelf(userId) || isAdmin();
+      allow list: if isAdmin();
+      allow create: if isSelf(userId)
+        && request.resource.data.keys().hasOnly([
+          'uid', 'storeName', 'description', 'status', 'createdAt'
+        ])
+        && request.resource.data.uid == userId
+        && request.resource.data.storeName is string
+        && request.resource.data.storeName.size() >= 2
+        && request.resource.data.storeName.size() <= 60
+        && request.resource.data.description is string
+        && request.resource.data.description.size() >= 10
+        && request.resource.data.description.size() <= 500
+        && request.resource.data.status == 'PENDING'
+        && request.resource.data.createdAt == request.time
+        && get(/databases/$(database)/documents/users/$(userId)).data.role == 'BUYER';
+      allow update: if isAdmin()
+        && resource.data.status == 'PENDING'
+        && request.resource.data.keys().hasOnly([
+          'uid', 'storeName', 'description', 'status', 'createdAt', 'reviewedAt', 'reviewedBy'
+        ])
+        && request.resource.data.uid == userId
+        && request.resource.data.status in ['APPROVED', 'REJECTED']
+        && request.resource.data.reviewedBy == request.auth.uid
+        && request.resource.data.reviewedAt == request.time;
+      allow delete: if false;
+    }
+
+    match /orders/{orderId} {
+      allow get, list: if isAdmin()
+        || (signedIn()
+          && (resource.data.buyerId == request.auth.uid
+            || resource.data.sellerId == request.auth.uid));
+      allow create, update, delete: if false;
+    }
+
+    match /orderItems/{itemId} {
+      allow get, list: if canReadOrder(resource.data.orderId);
+      allow write: if false;
+    }
+
+    match /inventory/{inventoryId} {
+      allow read, write: if false;
+    }
+
+    match /wallets/{userId} {
+      allow get: if isSelf(userId) || isAdmin();
+      allow list: if isAdmin();
+      allow write: if false;
+    }
+
+    match /transactions/{transactionId} {
+      allow get, list: if isAdmin() || (signedIn() && resource.data.userId == request.auth.uid);
+      allow write: if false;
+    }
+
+    match /withdrawals/{withdrawalId} {
+      allow get, list: if isAdmin() || (signedIn() && resource.data.sellerId == request.auth.uid);
+      allow write: if false;
+    }
+
+    match /reviews/{orderId} {
+      allow read: if resource.data.status == 'PUBLISHED' || isAdmin();
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly([
+          'orderId', 'productId', 'buyerId', 'sellerId', 'rating', 'comment', 'status', 'createdAt'
+        ])
+        && request.resource.data.orderId == orderId
+        && request.resource.data.buyerId == request.auth.uid
+        && request.resource.data.rating is int
+        && request.resource.data.rating >= 1
+        && request.resource.data.rating <= 5
+        && request.resource.data.comment is string
+        && request.resource.data.comment.size() <= 2000
+        && request.resource.data.status == 'PUBLISHED'
+        && request.resource.data.createdAt == request.time
+        && exists(/databases/$(database)/documents/orders/$(orderId))
+        && get(/databases/$(database)/documents/orders/$(orderId)).data.buyerId == request.auth.uid
+        && get(/databases/$(database)/documents/orders/$(orderId)).data.sellerId == request.resource.data.sellerId
+        && get(/databases/$(database)/documents/orders/$(orderId)).data.productId == request.resource.data.productId
+        && get(/databases/$(database)/documents/orders/$(orderId)).data.status == 'COMPLETED';
+      allow update, delete: if false;
+    }
+
+    match /favorites/{favoriteId} {
+      allow get, list: if isAdmin() || (signedIn() && resource.data.userId == request.auth.uid);
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['userId', 'productId', 'createdAt'])
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.productId is string
+        && request.resource.data.createdAt == request.time
+        && exists(/databases/$(database)/documents/products/$(request.resource.data.productId));
+      allow update: if false;
+      allow delete: if signedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    match /chats/{chatId} {
+      allow get, list: if isAdmin()
+        || (signedIn() && request.auth.uid in resource.data.participantIds);
+      allow create, update, delete: if false;
+    }
+
+    match /messages/{messageId} {
+      function isChatParticipant(chatId) {
+        let chatPath = /databases/$(database)/documents/chats/$(chatId);
+        return signedIn() && exists(chatPath)
+          && request.auth.uid in get(chatPath).data.participantIds;
+      }
+
+      allow get, list: if isAdmin() || isChatParticipant(resource.data.chatId);
+      allow create: if isChatParticipant(request.resource.data.chatId)
+        && request.resource.data.keys().hasOnly([
+          'chatId', 'senderId', 'text', 'createdAt', 'read'
+        ])
+        && request.resource.data.senderId == request.auth.uid
+        && request.resource.data.text is string
+        && request.resource.data.text.size() > 0
+        && request.resource.data.text.size() <= 5000
+        && request.resource.data.read == false
+        && request.resource.data.createdAt == request.time;
+      allow update: if isChatParticipant(resource.data.chatId)
+        && request.auth.uid != resource.data.senderId
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read'])
+        && request.resource.data.read == true;
+      allow delete: if false;
+    }
+
+    match /disputes/{disputeId} {
+      allow get, list: if isAdmin()
+        || (signedIn() && (resource.data.buyerId == request.auth.uid
+          || resource.data.sellerId == request.auth.uid));
+      allow create, update, delete: if false;
+    }
+
+    match /promocodes/{codeId} {
+      allow read, write: if false;
+    }
+
+    match /notifications/{notificationId} {
+      allow get, list: if isAdmin() || (signedIn() && resource.data.userId == request.auth.uid);
+      allow create, delete: if false;
+      allow update: if signedIn()
+        && resource.data.userId == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read'])
+        && request.resource.data.read is bool;
+    }
+
+    match /settings/{settingId} {
+      allow get: if settingId == 'public';
+      allow list, write: if false;
+    }
+
+    match /auditLogs/{logId} {
+      allow get, list: if isAdmin();
+      allow create: if isAdmin()
+        && request.resource.data.keys().hasOnly([
+          'action', 'actorId', 'targetUserId', 'createdAt'
+        ])
+        && request.resource.data.action in [
+          'SELLER_APPLICATION_APPROVED', 'SELLER_APPLICATION_REJECTED',
+          'PRODUCT_APPROVED', 'PRODUCT_REJECTED'
+        ]
+        && request.resource.data.actorId == request.auth.uid
+        && request.resource.data.targetUserId is string
+        && request.resource.data.createdAt == request.time;
+      allow update, delete: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
